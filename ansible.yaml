@@ -1,0 +1,151 @@
+---
+- name: Provision Node.js server and deploy application
+  hosts: 44.197.245.165
+  become: true
+  
+ 
+  vars:
+    # New user details
+    app_user: "ubuntu"
+    app_dir: "/home/ubuntu/simple-nodeapp"
+    # app_user_password: "horizon"
+    app_user_home: "/home/ubuntu"
+    # app_user_ssh_key_path: "/home/nodejs/.ssh/"
+
+
+  tasks:
+    - name: Update APT repo
+      become: true
+      ansible.builtin.apt:
+        update_cache: true
+          
+    - name: Update apt repo and cache
+      apt: update_cache=yes force_apt_get=yes cache_valid_time=3600
+
+    # - name: Create new user using adduser
+    #   ansible.builtin.command:
+    #     cmd: adduser --disabled-password --gecos "" {{ app_user }}
+    #   register: adduser_result
+
+    # - name: Set password for admin user
+    #   ansible.builtin.shell:
+    #     cmd: echo "{{ app_user }}:{{ app_user_password }}" | chpasswd -e
+    #   when: adduser_result.changed
+
+    # - name: Add new user to sudo group
+    #   ansible.builtin.user:
+    #     name: "{{ app_user }}"
+    #     groups: "sudo"
+    #     append: yes
+
+    # - name: Copy authorized keys for new user (if file exists)
+    #   ansible.builtin.copy:
+    #     src: "~/.ssh/authorized_keys"
+    #     dest: "{{ app_user_ssh_key_path }}"
+    #     owner: "{{ app_user }}"
+    #     group: "{{ app_user }}"
+    #     mode: '0600'
+      
+
+
+    # Perform subsequent tasks as the new user
+    - name: Install Node.js and npm
+      ansible.builtin.apt:
+        name:
+          - nodejs
+          - npm
+        state: present
+      become: true
+      
+
+    - name: Install Github CLI 'gh'
+      ansible.builtin.shell: |
+        (type -p wget >/dev/null || (sudo apt update && sudo apt-get install wget -y)) \
+        && sudo mkdir -p -m 755 /etc/apt/keyrings \
+        && wget -qO- https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo tee /etc/apt/keyrings/githubcli-archive-keyring.gpg > /dev/null \
+        && sudo chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+        && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null \
+        && sudo apt update \
+        && sudo apt install gh -y
+      become: true
+      
+    - name: Include vault variables
+      ansible.builtin.include_vars:
+        file: terraformvault.yaml
+
+      
+        
+    - name: Log into GitHub CLI
+      become: true
+      become_user: "{{ app_user }}"
+      ansible.builtin.shell: |
+        echo  "{{ gh_token }}" > gh_token.txt;
+        gh auth login --with-token < gh_token.txt;
+      
+
+    - name: Pull flagly repo
+      become: true
+      become_user: "{{ app_user }}"
+      ansible.builtin.shell: 
+        cmd: gh repo clone https://github.com/3ni0lA/simple-nodeapp.git
+        chdir: "/home/ubuntu/simple-nodeapp"
+      register: result
+
+    - name: Debug the result
+      ansible.builtin.debug:
+        var: result
+
+    - name: Clean up node_modules directory
+      ansible.builtin.file:
+        path: /home/nodejs/simple-nodeapp/node_modules
+        state: absent    
+
+    - name: Install app dependencies
+      ansible.builtin.command: npm install
+      args:
+        chdir: "{{ app_dir }}"
+      become: true
+      become_user: "{{ app_user }}"
+
+    - name: Ensure swap space is available
+      ansible.builtin.shell:
+        cmd: |
+          if [ $(swapon --show=NAME --noheadings | wc -l) -eq 0 ]; then
+            sudo fallocate -l 4G /swapfile
+            sudo chmod 600 /swapfile
+            sudo mkswap /swapfile
+            sudo swapon /swapfile
+            echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+          fi
+
+
+    - name: Ensure NVM is installed
+      become: true
+      become_user: "{{ app_user }}"
+      shell: |
+        curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.1/install.sh | bash
+        export NVM_DIR="$HOME/.nvm"
+        [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+        nvm install --lts
+        nvm alias default lts/*
+        nvm use default
+      args:
+        executable: /bin/bash    
+
+    # - name: Install PM2 globally using NVM
+    #   become: true
+    #   shell: |
+    #     nvm use default
+    #     npm install -g pm2
+    #   args:
+    #     executable: /bin/bash
+    
+    - name: Start the application  
+      become: true
+      become_user: "{{ app_user }}"
+      shell: |
+          npm start
+      args:
+        chdir: "{{ app_dir }}" #failed to start application cause of dontenv depency isnt installed properly
+        executable: /bin/bash
+       
